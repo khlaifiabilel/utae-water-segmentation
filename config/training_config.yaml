@@ -1,0 +1,65 @@
+# Training Configuration for UTAE Water Segmentation
+
+model:
+  name: "UTAE_Water_Segmentation"
+  s1_channels: 2  # VV, VH
+  s2_channels: 6  # Selected S2 bands
+  encoder_widths: [64, 128, 256, 512]
+  decoder_widths: [64, 128, 256, 512]
+  n_head: 16
+  d_model: 256
+  agg_mode: "att_group"
+  dropout: 0.1
+
+data:
+  dataset_name: "ibm-granite/granite-geospatial-uki-flooddetection"
+  batch_size: 8
+  num_workers: 4
+  target_size: [256, 256]
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  load_to_memory: false  # Set to true for faster training if you have enough RAM
+  
+  # Data augmentation settings
+  augmentation:
+    horizontal_flip: 0.5
+    vertical_flip: 0.5
+    rotate_90: 0.5
+    shift_scale_rotate: 0.5
+    brightness_contrast: 0.3
+    noise: 0.2
+
+training:
+  epochs: 100
+  learning_rate: 1e-4
+  weight_decay: 1e-4
+  scheduler: "cosine"
+  warmup_epochs: 5
+  gradient_clip: 1.0
+  
+loss:
+  type: "focal"  # "focal" or "weighted_ce"
+  alpha: 1.0
+  gamma: 2.0
+  class_weights: [1.0, 3.0]  # [no_water, water]
+
+metrics:
+  - "accuracy"
+  - "precision"
+  - "recall"
+  - "f1_score"
+  - "iou"
+  - "dice"
+
+logging:
+  use_wandb: true
+  project_name: "utae-water-segmentation"
+  log_interval: 10
+  save_interval: 5
+
+paths:
+  data_dir: "data/processed"
+  checkpoint_dir: "experiments/checkpoints"
+  log_dir: "experiments/logs"
+  results_dir: "experiments/results"
