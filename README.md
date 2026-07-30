@@ -37,6 +37,25 @@ The configured Hugging Face dataset may be gated or require authentication.
 Downloading and preprocessing it is an explicit user action; tests do not access
 the network or real data.
 
+## Data Utilities
+
+The default configuration names the gated
+[`ibm-granite/granite-geospatial-uki-flooddetection`](https://huggingface.co/datasets/ibm-granite/granite-geospatial-uki-flooddetection)
+dataset. The repository includes three data utilities:
+
+```bash
+python scripts/download-data.py
+python scripts/preprocess_data.py --visualize
+python scripts/test_dataset.py
+```
+
+`download-data.py` inspects the remote splits and saves metadata plus a small
+set of samples under `data/raw/`. `preprocess_data.py` loads the configured
+dataset, normalizes and resizes identified S1/S2/mask fields, and writes the
+processed split files expected by training. `test_dataset.py` inspects those
+processed files. These utilities require dataset access and were not exercised
+by the offline synthetic test suite.
+
 ## Training
 
 Review channel counts, widths, paths, and optimization settings, then run:
@@ -81,8 +100,11 @@ python -m pip check
 
 The architecture is inspired by the U-TAE work and implementation by Vivien
 Sainte Fare Garnot and collaborators; this repository is an independent,
-simplified adaptation for water segmentation. See the upstream U-TAE project and
-paper for the original architecture and citation guidance.
+simplified adaptation for water segmentation. See the
+[official U-TAE/PaPs implementation](https://github.com/VSainteuf/utae-paps) and
+the ICCV 2021 paper
+[*Panoptic Segmentation of Satellite Image Time Series with Convolutional Temporal Attention Networks*](https://arxiv.org/abs/2107.07933)
+for the original architecture and citation guidance.
 
 This project is licensed under GPL-3.0; see `LICENSE`. Please report security
 issues using `.github/SECURITY.md`, rather than opening a public vulnerability
