@@ -192,3 +192,9 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Project data and generated outputs
+/data/raw/
+/data/processed/
+/experiments/
+/outputs/

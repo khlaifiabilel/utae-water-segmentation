@@ -1,61 +1,89 @@
-# UTAE Water Segmentation
+# U-TAE Water Segmentation
 
-**Multi-modal water/land segmentation using UTAE-PAPS architecture with Sentinel-1 and Sentinel-2 data**
-
-## Overview
-
-This project implements a two-phase approach for water detection:
-
-1. **Phase 1**: Train UTAE-PAPS on multi-modal data (Sentinel-1 + Sentinel-2) using the IBM Granite Geospatial UKI Flood Detection Dataset
-2. **Phase 2**: Knowledge distillation to create a Sentinel-2 only model for practical deployment
-
-## Features
-
-- 🛰️ Multi-modal satellite data processing (S1 + S2)
-- 🌊 Binary water/land segmentation
-- 🧠 Knowledge distillation for S2-only inference
-- 📊 Comprehensive evaluation metrics
-- 🚀 Easy deployment and inference
+PyTorch code for binary water segmentation from temporal Sentinel-1 (S1) and
+Sentinel-2 (S2) tensors. The model is a compact U-shaped encoder-decoder inspired
+by U-TAE, with optional temporal attention at the deepest encoder feature. It is
+not an implementation of PAPS or a knowledge-distillation pipeline.
 
 ## Installation
 
-```bash
-git clone https://github.com/khlaifiabilel/utae-water-segmentation.git
-cd utae-water-segmentation
-pip install -r requirements.txt
-pip install -e .
-```
-## Quick Start
+Python 3.10 or newer is required.
 
-Training Multi-modal Model
 ```bash
-python scripts/train_multimodal.py --config config/training_config.yaml
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m pip install -e .
 ```
 
-Training S2-only Model (Knowledge Distillation)
-```bash
-python scripts/train_s2_only.py --teacher-model experiments/checkpoints/best_multimodal.pth
+## Processed Data Contract
+
+The configured directory has one serialized list per split:
+
+```text
+data/processed/
+  train/train_processed.pt
+  validation/validation_processed.pt
+  test/test_processed.pt
 ```
-Inference
+
+Each list item contains `s1_data`, `s2_data`, and `mask`. A modality may be
+`[C,H,W]` or `[T,C,H,W]`; both modalities must have equal temporal and spatial
+dimensions and must match `model.s1_channels` and `model.s2_channels` in
+`config/training_config.yaml`. The dataset returns canonical `s1_data` and
+`s2_data` tensors plus `image` shaped `[T,C1+C2,H,W]` and `mask` shaped `[H,W]`.
+
+The configured Hugging Face dataset may be gated or require authentication.
+Downloading and preprocessing it is an explicit user action; tests do not access
+the network or real data.
+
+## Training
+
+Review channel counts, widths, paths, and optimization settings, then run:
+
 ```bash
-python scripts/predict.py --model experiments/checkpoints/s2_only_model.pth --input /path/to/sentinel2/image
+python train.py --config config/training_config.yaml
 ```
 
-## Dataset
-This project uses the IBM Granite Geospatial UKI Flood Detection Dataset from Hugging Face.
- 
-## Model Architecture
-Based on UTAE-PAPS (U-Temporal Attention Encoder with Parcels-as-Points) adapted for water segmentation tasks.
+No trained checkpoints or published benchmark metrics are provided. The default
+configuration is an example, not a claim of validated model quality.
 
-## Citation
-BibTeX
-@misc{utae-water-segmentation,
-  title={UTAE Water Segmentation: Multi-modal Water Detection using Temporal Attention},
-  author={Bilel Khlaifi},
-  year={2025},
-  url={https://github.com/khlaifiabilel/utae-water-segmentation}
-}
+## S2-Only Inference
 
-## Acknowledgments
-Original UTAE-PAPS implementation by VSainteuf
-IBM Granite Geospatial team for the flood detection dataset
+`inference_s2.py` accepts a GeoTIFF and writes a class GeoTIFF, with optional PNG
+and GeoJSON outputs. It requires a checkpoint trained with exactly the specified
+S2-only channel count and architecture. A multimodal S1+S2 checkpoint is not
+compatible.
+
+```bash
+python inference_s2.py --model s2_only.pth --input image.tif --output outputs \
+  --s2-channels 13 --encoder-widths 64,128,256,512
+```
+
+## Verification
+
+The synthetic CPU suite covers dataset shape validation and memory caching,
+single- and multi-time-step model execution, backward propagation, training and
+validation steps, ignored labels, metrics, checkpoint loading, and S2 tensor
+preparation. The repository repair was verified with:
+
+```bash
+python -m pytest -q
+ruff check data/dataset.py models/utae_water_segmentation.py utils/losses.py \
+  utils/metrics.py train.py inference_s2.py setup.py tests
+ruff format --check data/dataset.py models/utae_water_segmentation.py \
+  utils/losses.py utils/metrics.py train.py inference_s2.py setup.py tests
+python -m compileall -q .
+python -m pip check
+```
+
+## Attribution, License, and Security
+
+The architecture is inspired by the U-TAE work and implementation by Vivien
+Sainte Fare Garnot and collaborators; this repository is an independent,
+simplified adaptation for water segmentation. See the upstream U-TAE project and
+paper for the original architecture and citation guidance.
+
+This project is licensed under GPL-3.0; see `LICENSE`. Please report security
+issues using `.github/SECURITY.md`, rather than opening a public vulnerability
+issue.

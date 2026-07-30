@@ -1,137 +1,112 @@
+"""Segmentation losses and configuration factory."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
+
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch import nn
+from torch.nn import functional as F
+
 
 class DiceLoss(nn.Module):
-    """
-    Dice loss for water segmentation
-    Optimized for binary segmentation (water/no-water)
-    """
-    def __init__(self, smooth=1.0, ignore_index=-1):
-        super(DiceLoss, self).__init__()
+    def __init__(self, smooth: float = 1.0, ignore_index: int = -1) -> None:
+        super().__init__()
         self.smooth = smooth
         self.ignore_index = ignore_index
-        
-    def forward(self, logits, targets):
-        """
-        Args:
-            logits: Model output before softmax, [B, C, H, W]
-            targets: Ground truth labels, [B, H, W]
-        """
-        # Get probabilities
-        probs = F.softmax(logits, dim=1)
-        
-        # One-hot encode targets
-        B, C, H, W = logits.shape
-        targets_one_hot = torch.zeros_like(logits)
-        
-        # Ignore pixels with ignore_index
-        if self.ignore_index >= 0:
-            valid_mask = (targets != self.ignore_index).unsqueeze(1)
-            targets_one_hot.scatter_(1, targets.unsqueeze(1).clamp(0).long() * valid_mask.long(), 1)
-        else:
-            targets_one_hot.scatter_(1, targets.unsqueeze(1).long(), 1)
-        
-        # Flatten
-        probs_flat = probs.view(B, C, -1)
-        targets_flat = targets_one_hot.view(B, C, -1)
-        
-        # Compute Dice coefficient for each class
-        intersection = torch.sum(probs_flat * targets_flat, dim=2)
-        cardinality = torch.sum(probs_flat + targets_flat, dim=2)
-        dice_score = (2. * intersection + self.smooth) / (cardinality + self.smooth)
-        
-        # Average Dice over classes (typically just water/no-water)
-        return 1 - dice_score.mean()
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        classes = logits.shape[1]
+        valid = targets != self.ignore_index
+        if not valid.any():
+            return logits.sum() * 0.0
+        safe_targets = targets.masked_fill(~valid, 0)
+        one_hot = F.one_hot(safe_targets.long(), classes).permute(0, 3, 1, 2)
+        one_hot = one_hot.to(dtype=logits.dtype)
+        valid_channels = valid.unsqueeze(1)
+        probabilities = F.softmax(logits, dim=1) * valid_channels
+        one_hot = one_hot * valid_channels
+        dimensions = (0, 2, 3)
+        intersection = (probabilities * one_hot).sum(dimensions)
+        cardinality = (probabilities + one_hot).sum(dimensions)
+        dice = (2 * intersection + self.smooth) / (cardinality + self.smooth)
+        return 1 - dice.mean()
+
 
 class FocalLoss(nn.Module):
-    """
-    Focal loss for handling class imbalance in water segmentation
-    Focuses more on hard-to-classify examples
-    """
-    def __init__(self, alpha=0.25, gamma=2.0, ignore_index=-1):
-        super(FocalLoss, self).__init__()
+    def __init__(
+        self, alpha: float = 0.25, gamma: float = 2.0, ignore_index: int = -1
+    ) -> None:
+        super().__init__()
         self.alpha = alpha
         self.gamma = gamma
         self.ignore_index = ignore_index
-        
-    def forward(self, logits, targets):
-        """
-        Args:
-            logits: Model output before softmax, [B, C, H, W]
-            targets: Ground truth labels, [B, H, W]
-        """
-        # Get log probabilities
-        log_probs = F.log_softmax(logits, dim=1)
-        probs = torch.exp(log_probs)
-        
-        # One-hot encode targets
-        B, C, H, W = logits.shape
-        targets_one_hot = torch.zeros_like(logits)
-        
-        # Create mask for valid pixels
-        if self.ignore_index >= 0:
-            valid_mask = (targets != self.ignore_index).unsqueeze(1)
-            targets_one_hot.scatter_(1, targets.unsqueeze(1).clamp(0).long() * valid_mask.long(), 1)
-            valid_mask = valid_mask.expand(-1, C, -1, -1)
-        else:
-            targets_one_hot.scatter_(1, targets.unsqueeze(1).long(), 1)
-            valid_mask = torch.ones_like(targets_one_hot)
-        
-        # Compute focal weight
-        pt = (targets_one_hot * probs).sum(1)  # Get probability of ground truth class
-        focal_weight = (1 - pt) ** self.gamma
-        
-        # Apply alpha weighting
-        alpha_weight = targets_one_hot * self.alpha + (1 - targets_one_hot) * (1 - self.alpha)
-        
-        # Compute loss
-        loss = -alpha_weight * focal_weight.unsqueeze(1) * targets_one_hot * log_probs
-        valid_pixels = valid_mask.sum() + 1e-6  # Avoid division by zero
-        
-        return loss.sum() / valid_pixels
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        valid = targets != self.ignore_index
+        if not valid.any():
+            return logits.sum() * 0.0
+        safe_targets = targets.masked_fill(~valid, 0)
+        cross_entropy = F.cross_entropy(logits, safe_targets, reduction="none")
+        true_probability = torch.exp(-cross_entropy)
+        loss = self.alpha * (1 - true_probability) ** self.gamma * cross_entropy
+        return loss[valid].mean()
+
+
+class MaskedCrossEntropyLoss(nn.CrossEntropyLoss):
+    """Cross entropy that remains finite when every target is ignored."""
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        if not (targets != self.ignore_index).any():
+            return logits.sum() * 0.0
+        return super().forward(logits, targets)
+
 
 class ComboLoss(nn.Module):
-    """
-    Combination of Cross-Entropy and Dice loss for water segmentation
-    """
-    def __init__(self, ce_weight=0.5, dice_weight=0.5, class_weights=None, ignore_index=-1):
-        super(ComboLoss, self).__init__()
+    def __init__(
+        self,
+        ce_weight: float = 0.5,
+        dice_weight: float = 0.5,
+        class_weights: Sequence[float] | None = None,
+        ignore_index: int = -1,
+    ) -> None:
+        super().__init__()
+        weights = torch.tensor(class_weights) if class_weights is not None else None
         self.ce_weight = ce_weight
         self.dice_weight = dice_weight
-        self.ce = nn.CrossEntropyLoss(weight=torch.tensor(class_weights) if class_weights else None,
-                                      ignore_index=ignore_index)
+        self.ce = MaskedCrossEntropyLoss(weight=weights, ignore_index=ignore_index)
         self.dice = DiceLoss(ignore_index=ignore_index)
-        
-    def forward(self, logits, targets):
-        """
-        Args:
-            logits: Model output before softmax, [B, C, H, W]
-            targets: Ground truth labels, [B, H, W]
-        """
-        ce_loss = self.ce(logits, targets)
-        dice_loss = self.dice(logits, targets)
-        return self.ce_weight * ce_loss + self.dice_weight * dice_loss
 
-def get_loss_function(loss_config):
-    """
-    Factory function to create loss function based on configuration
-    """
-    loss_type = loss_config.get('loss_type', 'cross_entropy')
-    class_weights = loss_config.get('class_weights', None)
-    ignore_index = loss_config.get('ignore_index', -1)
-    
-    if loss_type == 'cross_entropy':
-        if class_weights:
-            return nn.CrossEntropyLoss(weight=torch.tensor(class_weights), 
-                                       ignore_index=ignore_index)
-        else:
-            return nn.CrossEntropyLoss(ignore_index=ignore_index)
-    elif loss_type == 'dice':
-        return DiceLoss(ignore_index=ignore_index)
-    elif loss_type == 'focal':
-        return FocalLoss(ignore_index=ignore_index)
-    elif loss_type == 'combo':
-        return ComboLoss(class_weights=class_weights, ignore_index=ignore_index)
-    else:
-        raise ValueError(f"Unknown loss type: {loss_type}")
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        return self.ce_weight * self.ce(logits, targets) + self.dice_weight * self.dice(
+            logits, targets
+        )
+
+
+def get_loss_function(loss_config: Mapping[str, Any]) -> nn.Module:
+    """Create a loss from the canonical ``loss.type`` configuration key."""
+    loss_type = loss_config.get("type", "cross_entropy")
+    class_weights = loss_config.get("class_weights")
+    ignore_index = int(loss_config.get("ignore_index", -1))
+    if loss_type in {"cross_entropy", "weighted_ce"}:
+        weights = torch.tensor(class_weights) if class_weights is not None else None
+        return MaskedCrossEntropyLoss(weight=weights, ignore_index=ignore_index)
+    if loss_type == "dice":
+        return DiceLoss(
+            smooth=float(loss_config.get("smooth", 1.0)), ignore_index=ignore_index
+        )
+    if loss_type == "focal":
+        return FocalLoss(
+            alpha=float(loss_config.get("alpha", 0.25)),
+            gamma=float(loss_config.get("gamma", 2.0)),
+            ignore_index=ignore_index,
+        )
+    if loss_type == "combo":
+        return ComboLoss(
+            ce_weight=float(loss_config.get("ce_weight", 0.5)),
+            dice_weight=float(loss_config.get("dice_weight", 0.5)),
+            class_weights=class_weights,
+            ignore_index=ignore_index,
+        )
+    raise ValueError(f"Unknown loss type: {loss_type}")
