@@ -1,166 +1,156 @@
+from collections.abc import Iterable, Mapping, Sequence
+
 import torch
+from torch import nn
 
 
-def accuracy(outputs, targets, ignore_index=-1):
-    """
-    Computes pixel accuracy
-    Args:
-        outputs: Model output after softmax, [B, C, H, W]
-        targets: Ground truth labels, [B, H, W]
-        ignore_index: Index to ignore from evaluation
-    Returns:
-        Pixel accuracy
-    """
-    with torch.no_grad():
-        _, predicted = torch.max(outputs, dim=1)
-        if ignore_index >= 0:
-            valid_mask = targets != ignore_index
-            correct = (predicted == targets) & valid_mask
-            total = valid_mask.sum().item()
-        else:
-            correct = predicted == targets
-            total = targets.numel()
+def _confusion_matrix(
+    outputs: torch.Tensor,
+    targets: torch.Tensor,
+    num_classes: int | None = None,
+    ignore_index: int | None = -1,
+) -> torch.Tensor:
+    if outputs.ndim < 3:
+        raise ValueError("outputs must have shape [B, C, ...]")
+    if targets.shape != (outputs.shape[0], *outputs.shape[2:]):
+        raise ValueError("targets must match the batch and spatial output dimensions")
 
-        correct_pixels = correct.sum().item()
-        return correct_pixels / (total + 1e-8)  # Avoid division by zero
+    output_classes = outputs.shape[1]
+    if num_classes is None:
+        num_classes = output_classes
+    if num_classes <= 0 or output_classes != num_classes:
+        raise ValueError("num_classes must match the output channel count")
 
+    predicted = outputs.argmax(dim=1)
+    valid = torch.ones_like(targets, dtype=torch.bool)
+    if ignore_index is not None:
+        valid &= targets != ignore_index
 
-def iou(outputs, targets, num_classes=2, ignore_index=-1):
-    """
-    Computes Intersection over Union (IoU), also known as Jaccard Index
-    Args:
-        outputs: Model output after softmax, [B, C, H, W]
-        targets: Ground truth labels, [B, H, W]
-        num_classes: Number of classes
-        ignore_index: Index to ignore from evaluation
-    Returns:
-        List of IoU for each class, Mean IoU
-    """
-    with torch.no_grad():
-        _, predicted = torch.max(outputs, dim=1)
-        class_iou = []
+    valid_targets = targets[valid]
+    if valid_targets.numel() == 0:
+        return torch.zeros((num_classes, num_classes), dtype=torch.int64)
+    if torch.any((valid_targets < 0) | (valid_targets >= num_classes)):
+        raise ValueError("targets contain a class outside the configured range")
 
-        for cls in range(num_classes):
-            if ignore_index >= 0:
-                valid_mask = targets != ignore_index
-                pred_cls = (predicted == cls) & valid_mask
-                target_cls = (targets == cls) & valid_mask
-            else:
-                pred_cls = predicted == cls
-                target_cls = targets == cls
-
-            intersection = (pred_cls & target_cls).sum().float().item()
-            union = (pred_cls | target_cls).sum().float().item()
-
-            iou_value = intersection / (union + 1e-8)  # Avoid division by zero
-            class_iou.append(iou_value)
-
-        mean_iou = sum(class_iou) / len(class_iou)
-        return class_iou, mean_iou
+    indices = valid_targets.to(torch.int64) * num_classes + predicted[valid]
+    return (
+        torch.bincount(indices, minlength=num_classes**2)
+        .reshape(num_classes, num_classes)
+        .cpu()
+    )
 
 
-def f1_score(outputs, targets, num_classes=2, ignore_index=-1):
-    """
-    Computes F1 score (harmonic mean of precision and recall)
-    Args:
-        outputs: Model output after softmax, [B, C, H, W]
-        targets: Ground truth labels, [B, H, W]
-        num_classes: Number of classes
-        ignore_index: Index to ignore from evaluation
-    Returns:
-        List of F1 scores for each class, Mean F1
-    """
-    with torch.no_grad():
-        _, predicted = torch.max(outputs, dim=1)
-        class_f1 = []
+def _scores(confusion: torch.Tensor) -> dict[str, float | list[float]]:
+    confusion = confusion.to(torch.float64)
+    true_positive = confusion.diag()
+    target_count = confusion.sum(dim=1)
+    predicted_count = confusion.sum(dim=0)
+    total = confusion.sum()
 
-        for cls in range(num_classes):
-            if ignore_index >= 0:
-                valid_mask = targets != ignore_index
-                pred_cls = (predicted == cls) & valid_mask
-                target_cls = (targets == cls) & valid_mask
-            else:
-                pred_cls = predicted == cls
-                target_cls = targets == cls
+    accuracy_value = (true_positive.sum() / total).item() if total else 0.0
+    iou_denominator = target_count + predicted_count - true_positive
+    f1_denominator = target_count + predicted_count
+    class_iou = torch.where(
+        iou_denominator > 0,
+        true_positive / iou_denominator,
+        torch.nan,
+    )
+    class_f1 = torch.where(
+        f1_denominator > 0,
+        2 * true_positive / f1_denominator,
+        torch.nan,
+    )
 
-            # True positives, false positives, false negatives
-            tp = (pred_cls & target_cls).sum().float().item()
-            fp = (pred_cls & ~target_cls).sum().float().item()
-            fn = (~pred_cls & target_cls).sum().float().item()
+    def macro(values: torch.Tensor) -> float:
+        present = values[~values.isnan()]
+        return present.mean().item() if present.numel() else 0.0
 
-            precision = tp / (tp + fp + 1e-8)
-            recall = tp / (tp + fn + 1e-8)
-
-            f1 = 2 * precision * recall / (precision + recall + 1e-8)
-            class_f1.append(f1)
-
-        mean_f1 = sum(class_f1) / len(class_f1)
-        return class_f1, mean_f1
-
-
-def evaluate_model(model, data_loader, device, metrics=None, ignore_index=-1):
-    """
-    Evaluate model performance on dataset
-    Args:
-        model: PyTorch model
-        data_loader: PyTorch DataLoader
-        device: Device to use for evaluation
-        metrics: List of metrics to compute, from ['accuracy', 'iou', 'f1']
-    Returns:
-        Dictionary of results
-    """
-    if metrics is None:
-        metrics = ["accuracy", "iou", "f1"]
-
-    model.eval()
-    results = {
-        "accuracy": 0.0,
-        "iou": [0.0, 0.0],  # Assuming 2 classes (no-water, water)
-        "mean_iou": 0.0,
-        "f1": [0.0, 0.0],  # Assuming 2 classes (no-water, water)
-        "mean_f1": 0.0,
+    return {
+        "accuracy": accuracy_value,
+        "iou": class_iou.tolist(),
+        "mean_iou": macro(class_iou),
+        "f1": class_f1.tolist(),
+        "mean_f1": macro(class_f1),
     }
 
-    total_samples = 0
 
+def accuracy(
+    outputs: torch.Tensor,
+    targets: torch.Tensor,
+    ignore_index: int | None = -1,
+) -> float:
+    """Return pixel accuracy over non-ignored targets, or 0.0 if none are valid."""
+    confusion = _confusion_matrix(outputs, targets, ignore_index=ignore_index)
+    return _scores(confusion)["accuracy"]
+
+
+def iou(
+    outputs: torch.Tensor,
+    targets: torch.Tensor,
+    num_classes: int | None = None,
+    ignore_index: int | None = -1,
+) -> tuple[list[float], float]:
+    """Return per-class and macro IoU; absent classes have a NaN score."""
+    scores = _scores(_confusion_matrix(outputs, targets, num_classes, ignore_index))
+    return scores["iou"], scores["mean_iou"]
+
+
+def f1_score(
+    outputs: torch.Tensor,
+    targets: torch.Tensor,
+    num_classes: int | None = None,
+    ignore_index: int | None = -1,
+) -> tuple[list[float], float]:
+    """Return per-class and macro F1; absent classes have a NaN score."""
+    scores = _scores(_confusion_matrix(outputs, targets, num_classes, ignore_index))
+    return scores["f1"], scores["mean_f1"]
+
+
+def evaluate_model(
+    model: nn.Module,
+    data_loader: Iterable[Mapping[str, torch.Tensor]],
+    device: torch.device | str,
+    metrics: Sequence[str] | None = None,
+    ignore_index: int | None = -1,
+) -> dict[str, float | list[float]]:
+    """Evaluate requested metrics from dataset-level confusion counts."""
+    requested = ("accuracy", "iou", "f1") if metrics is None else tuple(metrics)
+    unknown = set(requested) - {"accuracy", "iou", "f1"}
+    if unknown:
+        raise ValueError(f"Unsupported metrics: {', '.join(sorted(unknown))}")
+
+    model.eval()
+    confusion = None
     with torch.no_grad():
         for batch in data_loader:
-            inputs = batch["image"].to(device)
-            targets = batch["mask"].to(device)
+            outputs = model(batch["image"].to(device))
+            batch_confusion = _confusion_matrix(
+                outputs,
+                batch["mask"].to(device),
+                ignore_index=ignore_index,
+            )
+            confusion = (
+                batch_confusion if confusion is None else confusion + batch_confusion
+            )
 
-            # Forward pass
-            outputs = model(inputs)
-            batch_size = inputs.size(0)
-            total_samples += batch_size
+    if confusion is None:
+        all_scores: dict[str, float | list[float]] = {
+            "accuracy": 0.0,
+            "iou": [],
+            "mean_iou": 0.0,
+            "f1": [],
+            "mean_f1": 0.0,
+        }
+    else:
+        all_scores = _scores(confusion)
 
-            # Compute metrics
-            if "accuracy" in metrics:
-                batch_accuracy = accuracy(outputs, targets, ignore_index)
-                results["accuracy"] += batch_accuracy * batch_size
-
-            if "iou" in metrics:
-                batch_iou, batch_mean_iou = iou(
-                    outputs, targets, ignore_index=ignore_index
-                )
-                results["iou"][0] += batch_iou[0] * batch_size
-                results["iou"][1] += batch_iou[1] * batch_size
-                results["mean_iou"] += batch_mean_iou * batch_size
-
-            if "f1" in metrics:
-                batch_f1, batch_mean_f1 = f1_score(
-                    outputs, targets, ignore_index=ignore_index
-                )
-                results["f1"][0] += batch_f1[0] * batch_size
-                results["f1"][1] += batch_f1[1] * batch_size
-                results["mean_f1"] += batch_mean_f1 * batch_size
-
-    if total_samples == 0:
-        return results
-
-    for key in ("iou", "f1"):
-        results[key][0] /= total_samples
-        results[key][1] /= total_samples
-    for key in ("accuracy", "mean_iou", "mean_f1"):
-        results[key] /= total_samples
-
+    results: dict[str, float | list[float]] = {}
+    if "accuracy" in requested:
+        results["accuracy"] = all_scores["accuracy"]
+    if "iou" in requested:
+        results["iou"] = all_scores["iou"]
+        results["mean_iou"] = all_scores["mean_iou"]
+    if "f1" in requested:
+        results["f1"] = all_scores["f1"]
+        results["mean_f1"] = all_scores["mean_f1"]
     return results
