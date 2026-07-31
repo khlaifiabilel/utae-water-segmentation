@@ -74,6 +74,10 @@ python train.py --config config/training_config.yaml
 No trained checkpoints or published benchmark metrics are provided. The default
 configuration is an example, not a claim of validated model quality.
 
+See [`MODEL_CARD.md`](MODEL_CARD.md) for intended use, preprocessing
+requirements, evaluation guidance, limitations, and checkpoint release
+requirements.
+
 ## S2-Only Inference
 
 `inference_s2.py` accepts a GeoTIFF and writes a class GeoTIFF, with optional PNG
