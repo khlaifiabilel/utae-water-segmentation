@@ -79,7 +79,7 @@ def accuracy(
     targets: torch.Tensor,
     ignore_index: int | None = -1,
 ) -> float:
-    """Return pixel accuracy over non-ignored targets."""
+    """Return pixel accuracy over non-ignored targets, or 0.0 if none are valid."""
     confusion = _confusion_matrix(outputs, targets, ignore_index=ignore_index)
     return _scores(confusion)["accuracy"]
 
@@ -114,7 +114,7 @@ def evaluate_model(
     ignore_index: int | None = -1,
 ) -> dict[str, float | list[float]]:
     """Evaluate requested metrics from dataset-level confusion counts."""
-    requested = tuple(metrics or ("accuracy", "iou", "f1"))
+    requested = ("accuracy", "iou", "f1") if metrics is None else tuple(metrics)
     unknown = set(requested) - {"accuracy", "iou", "f1"}
     if unknown:
         raise ValueError(f"Unsupported metrics: {', '.join(sorted(unknown))}")

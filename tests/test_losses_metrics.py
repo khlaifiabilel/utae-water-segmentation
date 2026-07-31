@@ -84,6 +84,33 @@ def test_evaluate_model_is_invariant_to_batching() -> None:
     assert first == second
 
 
+def test_metrics_handle_all_ignored_targets() -> None:
+    outputs = torch.randn(1, 2, 2, 2)
+    targets = torch.full((1, 2, 2), -1)
+    assert accuracy(outputs, targets) == 0.0
+    class_iou, mean_iou = iou(outputs, targets)
+    class_f1, mean_f1 = f1_score(outputs, targets)
+    assert all(math.isnan(value) for value in class_iou + class_f1)
+    assert mean_iou == 0.0
+    assert mean_f1 == 0.0
+
+
+def test_evaluate_model_returns_only_requested_metrics() -> None:
+    samples = [{"image": torch.tensor([[[3.0]], [[0.0]]]), "mask": torch.tensor([[0]])}]
+    model = torch.nn.Identity()
+    loader = DataLoader(samples, batch_size=1)
+    assert set(evaluate_model(model, loader, "cpu", metrics=["iou"])) == {
+        "iou",
+        "mean_iou",
+    }
+    assert set(evaluate_model(model, loader, "cpu", metrics=["accuracy", "f1"])) == {
+        "accuracy",
+        "f1",
+        "mean_f1",
+    }
+    assert evaluate_model(model, loader, "cpu", metrics=[]) == {}
+
+
 def test_metrics_reject_invalid_inputs() -> None:
     outputs = torch.randn(1, 2, 2, 2)
     with pytest.raises(ValueError, match="spatial"):
