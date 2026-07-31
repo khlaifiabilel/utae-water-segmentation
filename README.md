@@ -12,6 +12,13 @@ Python 3.10 or newer is required.
 ```bash
 python -m venv .venv
 . .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m pip install -e .
+```
+
+For development, install the test and lint dependencies instead:
+
+```bash
 python -m pip install -r requirements-dev.txt
 python -m pip install -e .
 ```
@@ -84,7 +91,8 @@ python inference_s2.py --model s2_only.pth --input image.tif --output outputs \
 The synthetic CPU suite covers dataset shape validation and memory caching,
 single- and multi-time-step model execution, backward propagation, training and
 validation steps, ignored labels, metrics, checkpoint loading, and S2 tensor
-preparation. The repository repair was verified with:
+preparation. CI runs the suite and code-quality checks on Python 3.10 and 3.12.
+Run the same checks locally with:
 
 ```bash
 python -m pytest -q
