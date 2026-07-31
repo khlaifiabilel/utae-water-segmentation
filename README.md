@@ -12,7 +12,7 @@ Python 3.10 or newer is required.
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -r requirements-dev.txt
+python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
