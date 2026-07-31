@@ -23,6 +23,26 @@ def test_loss_factory_uses_type_key() -> None:
     assert isinstance(get_loss_function({"type": "dice"}), DiceLoss)
 
 
+def test_focal_alpha_balances_binary_classes() -> None:
+    logits = torch.zeros(1, 2, 1, 1)
+    background = FocalLoss(alpha=0.75, gamma=0)(
+        logits, torch.zeros(1, 1, 1, dtype=torch.long)
+    )
+    water = FocalLoss(alpha=0.75, gamma=0)(
+        logits, torch.ones(1, 1, 1, dtype=torch.long)
+    )
+    assert water.item() == pytest.approx(3 * background.item())
+
+
+def test_loss_factory_distinguishes_weighted_cross_entropy() -> None:
+    with pytest.raises(ValueError, match="does not accept"):
+        get_loss_function({"type": "cross_entropy", "class_weights": [1, 2]})
+    with pytest.raises(ValueError, match="requires"):
+        get_loss_function({"type": "weighted_ce"})
+    criterion = get_loss_function({"type": "weighted_ce", "class_weights": [1, 2]})
+    assert criterion.weight.tolist() == [1, 2]
+
+
 @pytest.mark.parametrize(
     "criterion",
     [

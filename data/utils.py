@@ -12,7 +12,7 @@ import torch
 
 
 def calculate_class_weights(
-    masks: list[np.ndarray], num_classes: int = 2
+    masks: list[np.ndarray], num_classes: int = 2, ignore_index: int | None = -1
 ) -> torch.Tensor:
     """
     Calculate class weights for imbalanced dataset
@@ -24,21 +24,26 @@ def calculate_class_weights(
     Returns:
         Class weights tensor
     """
-    # Count pixels for each class
-    class_counts = np.zeros(num_classes)
+    if num_classes <= 0:
+        raise ValueError("num_classes must be positive")
+    class_counts = np.zeros(num_classes, dtype=np.int64)
 
     for mask in masks:
-        unique, counts = np.unique(mask, return_counts=True)
-        for cls, count in zip(unique, counts):
-            if cls < num_classes:
-                class_counts[cls] += count
+        labels = np.asarray(mask).reshape(-1)
+        valid = np.isfinite(labels) & (labels >= 0) & (labels < num_classes)
+        valid &= labels == np.floor(labels)
+        if ignore_index is not None:
+            valid &= labels != ignore_index
+        class_counts += np.bincount(
+            labels[valid].astype(np.int64), minlength=num_classes
+        )
 
-    # Calculate weights (inverse frequency)
-    total_pixels = np.sum(class_counts)
-    class_weights = total_pixels / (num_classes * class_counts)
-
-    # Normalize weights
-    class_weights = class_weights / np.sum(class_weights) * num_classes
+    present = class_counts > 0
+    if not present.any():
+        raise ValueError("masks contain no valid class labels")
+    class_weights = np.zeros(num_classes, dtype=np.float64)
+    inverse_frequency = 1.0 / class_counts[present]
+    class_weights[present] = inverse_frequency / inverse_frequency.mean()
 
     return torch.tensor(class_weights, dtype=torch.float32)
 
@@ -58,8 +63,9 @@ def create_train_val_split(
     Returns:
         Tuple of (train_data, val_data, test_data)
     """
-    np.random.seed(seed)
-    indices = np.random.permutation(len(data_list))
+    if train_ratio < 0 or val_ratio < 0 or train_ratio + val_ratio > 1:
+        raise ValueError("split ratios must be non-negative and sum to at most 1")
+    indices = np.random.default_rng(seed).permutation(len(data_list))
 
     train_size = int(len(data_list) * train_ratio)
     val_size = int(len(data_list) * val_ratio)
