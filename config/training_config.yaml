@@ -32,10 +32,9 @@ training:
   
 loss:
   type: "focal"  # cross_entropy, weighted_ce, dice, focal, or combo
-  alpha: 0.25
+  alpha: [1.0, 3.0]  # Per-class focal weights: [no_water, water]
   gamma: 2.0
   ignore_index: -1
-  class_weights: [1.0, 3.0]  # [no_water, water]
 
 paths:
   data_dir: "data/processed"
